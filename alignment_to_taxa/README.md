@@ -94,3 +94,7 @@ This command would produce the following files inside the `results/taxonomy_run_
 * `my_project_sequence_hash_mapping.tsv`
 * `my_project_taxonomy_assignment_log.txt`
 ```
+
+## License
+
+This project is licensed under the GNU Lesser General Public License v3.0. See the `LICENSE` file for the full license text.
