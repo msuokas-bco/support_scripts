@@ -1,2 +1,2 @@
 # support_scripts
-Microbiome analysis related support scripts
+Various scripts to support microbiome analysis workflows
