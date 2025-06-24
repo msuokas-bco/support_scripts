@@ -93,7 +93,6 @@ This command would produce the following files inside the `results/taxonomy_run_
 * `my_project_taxonomy_table.tsv`
 * `my_project_sequence_hash_mapping.tsv`
 * `my_project_taxonomy_assignment_log.txt`
-```
 
 ## License
 
