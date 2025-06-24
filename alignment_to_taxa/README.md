@@ -76,7 +76,7 @@ Assuming no `--prefix` is used, the script generates the following files:
 
 Below is an example of how to run the script from the command line.
 
-````{bash}
+```{bash}
 ./alignment_to_taxa.py \
     --bam processed_data/alignments.bam \
     --abundance counts/sequence_abundances.tsv \
