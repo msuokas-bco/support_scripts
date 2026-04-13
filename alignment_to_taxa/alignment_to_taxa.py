@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# alignment_to_taxa.py v1.1.0
+# Changelog:
+#   v1.1.0 - Fixed log_message to respect --verbose flag (was always printing)
+#            Supplementary alignments (0x800, chimeric reads) now discarded to
+#              prevent false multi-mapping signals corrupting LCA assignment
+#            LCA denominator changed to total reference count so references with
+#              no annotation at a rank count against the threshold, preventing
+#              over-assignment at deeper ranks
 """
 Taxonomy Assignment Tool
 
@@ -6,17 +14,15 @@ This script processes BAM alignments and taxonomy files to assign taxonomy to se
 and create abundance tables with hash-based identifiers.
 
 Usage:
-    ./taxonomy_processor.py --bam INPUT.bam --abundance ABUNDANCE.tsv --taxonomy TAXONOMY.tsv
+    ./alignment_to_taxa.py --bam INPUT.bam --abundance ABUNDANCE.tsv --taxonomy TAXONOMY.tsv
                            [--output-dir OUTPUT_DIR] [--score-threshold 0.97] [--lca-threshold 0.8]
 """
 
 import pysam
-import pandas as pd
 from collections import defaultdict, Counter
 import os
 import hashlib
 import argparse
-import sys
 from datetime import datetime
 
 def parse_arguments():
@@ -29,8 +35,10 @@ def parse_arguments():
     
     # Optional arguments
     parser.add_argument('--output-dir', default='.', help='Output directory (default: current directory)')
-    parser.add_argument('--score-threshold', type=float, default=0.97, 
-                        help='Identity threshold for keeping multiple matches (default: 0.97)')
+    parser.add_argument('--score-threshold', type=float, default=0.97,
+                        help='Minimum fraction of best alignment score for retaining secondary hits. '
+                             'Hits below this fraction are discarded; if only one hit remains it is '
+                             'assigned directly, otherwise LCA is used (default: 0.97)')
     parser.add_argument('--lca-threshold', type=float, default=0.8, 
                         help='Agreement required at each rank to retain it (default: 0.8)')
     parser.add_argument('--prefix', default='', 
@@ -39,14 +47,15 @@ def parse_arguments():
     
     return parser.parse_args()
 
-def log_message(message, verbose=True):
-    """Print log message with timestamp"""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{timestamp}] {message}", flush=True)
+def log_message(message, verbose=False):
+    """Print log message with timestamp. Only prints if verbose is True."""
+    if verbose:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{timestamp}] {message}", flush=True)
 
 def hash_taxonomy(taxonomy):
     """Generate hash ID for a taxonomy string"""
-    return hashlib.md5(taxonomy.encode()).hexdigest()[:10]
+    return hashlib.sha256(taxonomy.encode()).hexdigest()[:10]
 
 def main():
     # Parse command line arguments
@@ -78,6 +87,7 @@ def main():
     log_message(f"Loading taxonomy from {args.taxonomy}", args.verbose)
     taxonomy_dict = {}
     with open(args.taxonomy) as f:
+        next(f)  # skip header line (ReferenceID\tTaxonomy)
         for line in f:
             parts = line.strip().split("\t")
             if len(parts) == 2:
@@ -95,6 +105,8 @@ def main():
             parts = line.strip().split("\t")
             seq_id = parts[0]
             counts = list(map(int, parts[1:]))
+            if len(counts) != len(header):
+                raise ValueError(f"Abundance file row '{seq_id}' has {len(counts)} values, expected {len(header)}")
             for sample, count in zip(header, counts):
                 abundance[seq_id][sample] = count
     log_message(f"Loaded abundance data for {len(abundance)} sequences", args.verbose)
@@ -104,8 +116,18 @@ def main():
     bamfile = pysam.AlignmentFile(args.bam, "rb")
     query_hits = defaultdict(list)
     all_refs = set()
-    
+    n_supplementary = 0
+
     for read in bamfile:
+        # Skip unmapped reads and supplementary alignments (0x800).
+        # Supplementary alignments represent chimeric/split reads where different
+        # parts of the same read map to different references. Including them would
+        # create false multi-mapping signals in query_hits and corrupt LCA assignment.
+        # Secondary alignments (0x100) are retained — these are legitimate multi-mappers
+        # needed for LCA resolution.
+        if read.is_supplementary:
+            n_supplementary += 1
+            continue
         if not read.is_unmapped:
             query = read.query_name
             ref = bamfile.get_reference_name(read.reference_id)
@@ -114,6 +136,7 @@ def main():
             query_hits[query].append((ref, score))
     bamfile.close()
     log_message(f"Processed {len(query_hits)} queries with alignments", args.verbose)
+    log_message(f"Chimeric reads discarded (supplementary alignments): {n_supplementary}", args.verbose)
     log_message(f"Found {len(all_refs)} unique reference sequences", args.verbose)
     
     # Check if refs match taxonomy keys directly
@@ -138,20 +161,22 @@ def main():
         # Compute LCA rank by rank
         lca_ranks = []
         for i in range(len(RANKS)):
-            # Get all values at this rank
+            # Get all values at this rank (excluding empty strings)
             rank_values = [taxa[i] for taxa in parsed_taxa if taxa[i]]
-            
-            # Skip if no values at this rank
+
+            # Skip if no reference has annotation at this rank
             if not rank_values:
                 lca_ranks.append("")
                 continue
-                
-            # Count occurrences of each value
+
+            # Count occurrences of each value.
+            # Denominator is total number of references (including those with no
+            # annotation at this rank) so that missing annotations count against
+            # the threshold and prevent over-assignment at deeper ranks.
             counts = Counter(rank_values)
             most_common, count = counts.most_common(1)[0]
-            
-            # Check if we meet the threshold
-            if count / len(rank_values) >= args.lca_threshold:
+
+            if count / len(parsed_taxa) >= args.lca_threshold:
                 lca_ranks.append(most_common)
             else:
                 # Add empty ranks for the rest
@@ -172,7 +197,7 @@ def main():
     # Process in smaller batches to provide progress feedback
     queries = list(query_hits.keys())
     total_queries = len(queries)
-    batch_size = min(100000, max(1, total_queries // 10))  # 10 progress updates or 100k batch size
+    batch_size = min(100000, max(1, -(-total_queries // 10)))  # ≤10 progress updates, capped at 100k
     n_batches = (total_queries + batch_size - 1) // batch_size
     
     for batch_idx in range(n_batches):
@@ -223,6 +248,7 @@ def main():
     log_message(f"Taxonomy lookup failures: {tax_lookup_failures} ({lookup_failure_rate:.1%})", args.verbose)
     
     with open(log_output, 'a') as log_file:
+        log_file.write(f"Chimeric reads discarded (supplementary alignments): {n_supplementary}\n")
         log_file.write(f"Total reference lookups: {total_refs_checked}\n")
         log_file.write(f"Taxonomy lookup failures: {tax_lookup_failures} ({lookup_failure_rate:.1%})\n")
     

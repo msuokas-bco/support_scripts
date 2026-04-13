@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
+# vsearch_dereplicate.py v1.1.0
+# Changelog:
+#   v1.1.0 - Robust sample ID extraction using regex (supports dots in filenames)
+#            Added --strip_suffix option to remove trailing suffixes (e.g. _trimmed)
+#              from sample IDs, so they match metadata without post-processing
 
 import os
+import re
+import sys
 import subprocess
 import tempfile
 import argparse
@@ -11,6 +18,9 @@ import gzip
 from Bio import SeqIO
 from concurrent.futures import ProcessPoolExecutor
 
+if sys.version_info < (3, 9):
+    sys.exit("Python 3.9 or later is required (uses str.removesuffix)")
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Dereplicate sequences from multiple FASTQ files')
     parser.add_argument('--input_dir', required=True, help='Directory containing fastq.gz files')
@@ -19,12 +29,26 @@ def parse_args():
     parser.add_argument('--derep_prefix', action='store_true', help='Use prefix dereplication instead of full-length')
     parser.add_argument('--min_seq_length', type=int, default=1, help='Minimum sequence length')
     parser.add_argument('--min_unique_size', type=int, default=1, help='Minimum unique sequence abundance')
-    parser.add_argument('--threads', type=int, default=1, help='Number of threads to use')
+    parser.add_argument('--threads', type=int, default=1, help='Number of parallel samples to process')
+    parser.add_argument('--strip_suffix', default='', help='Suffix to strip from sample IDs after extension removal (e.g. _trimmed)')
     return parser.parse_args()
 
-def convert_fastq_to_fasta(fastq_file, output_dir):
+def extract_sample_id(fastq_file, strip_suffix=''):
+    """Extract sample ID from filename.
+
+    Uses regex to strip .fastq or .fastq.gz extension, preserving any dots
+    in the sample name itself (e.g. sample.1_trimmed.fastq.gz -> sample.1_trimmed).
+    If strip_suffix is set (e.g. '_trimmed'), it is removed from the result
+    (e.g. sample.1_trimmed -> sample.1).
+    """
+    sample_id = re.sub(r'\.fastq(\.gz)?$', '', os.path.basename(fastq_file))
+    if strip_suffix:
+        sample_id = sample_id.removesuffix(strip_suffix)
+    return sample_id
+
+def convert_fastq_to_fasta(fastq_file, output_dir, strip_suffix=''):
     """Convert a fastq.gz file to fasta format with sample ID in the header"""
-    sample_id = os.path.basename(fastq_file).split('.')[0]
+    sample_id = extract_sample_id(fastq_file, strip_suffix)
     output_fasta = os.path.join(output_dir, f"{sample_id}.fasta")
     
     with gzip.open(fastq_file, "rt") as handle, open(output_fasta, "w") as output:
@@ -35,8 +59,8 @@ def convert_fastq_to_fasta(fastq_file, output_dir):
 
 def process_sample(fastq_file, temp_dir, args):
     """Process a single FASTQ file"""
-    fasta_file = convert_fastq_to_fasta(fastq_file, temp_dir)
-    sample_id = os.path.basename(fastq_file).split('.')[0]
+    fasta_file = convert_fastq_to_fasta(fastq_file, temp_dir, args.strip_suffix)
+    sample_id = extract_sample_id(fastq_file, args.strip_suffix)
     
     derep_fasta = os.path.join(temp_dir, f"{sample_id}_derep.fasta")
     uc_file = os.path.join(temp_dir, f"{sample_id}_derep.uc")
@@ -53,11 +77,15 @@ def process_sample(fastq_file, temp_dir, args):
         '--fasta_width', '0'
     ]
     
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        print(e.stderr.decode() if e.stderr else '', file=sys.stderr)
+        raise
     
     return sample_id, derep_fasta, uc_file
 
-def parse_uc_file(uc_file, sample_id):
+def parse_uc_file(uc_file):
     """Parse UC file to get sequence clusters and sizes"""
     seq_counts = defaultdict(int)
     
@@ -74,13 +102,16 @@ def parse_uc_file(uc_file, sample_id):
     
     return seq_counts
 
-def generate_sha1(sequence):
-    """Generate SHA1 hash for a sequence"""
-    return hashlib.sha1(sequence.encode()).hexdigest()
+def generate_sha256(sequence):
+    """Generate SHA256 hash for a sequence"""
+    return hashlib.sha256(sequence.encode()).hexdigest()
 
 def main():
     args = parse_args()
-    
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_fasta)), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_table)), exist_ok=True)
+
     with tempfile.TemporaryDirectory() as temp_dir:
         fastq_files = [os.path.join(args.input_dir, f) for f in os.listdir(args.input_dir) 
                       if f.endswith('.fastq.gz')]
@@ -101,12 +132,12 @@ def main():
         sequence_data = {}
         
         for sample_id, derep_fasta, uc_file in sample_results:
-            seq_counts = parse_uc_file(uc_file, sample_id)
+            seq_counts = parse_uc_file(uc_file)
             
             with open(derep_fasta, 'r') as f:
                 for record in SeqIO.parse(f, 'fasta'):
                     seq_str = str(record.seq)
-                    seq_id = generate_sha1(seq_str)
+                    seq_id = generate_sha256(seq_str)
                     
                     if seq_id not in sequence_data:
                         sequence_data[seq_id] = seq_str
@@ -121,7 +152,7 @@ def main():
             for seq_id, seq in sequence_data.items():
                 f.write(f">{seq_id}\n{seq}\n")
         
-        sample_ids = sorted([os.path.basename(f).split('.')[0] for f in fastq_files])
+        sample_ids = sorted([extract_sample_id(f, args.strip_suffix) for f in fastq_files])
         table_data = []
         
         for seq_id in sequence_data:

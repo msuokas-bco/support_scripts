@@ -26,7 +26,7 @@ The primary purpose of this script is to identify and count unique sequences fro
 2.  Running `vsearch` to dereplicate sequences within each sample.
 3.  Parsing the `vsearch` output to determine the abundance of each unique sequence per sample.
 4.  Aggregating the results from all samples into a master abundance table.
-5.  Generating a single FASTA file containing all unique sequences across all samples, identified by their SHA1 hash.
+5.  Generating a single FASTA file containing all unique sequences across all samples, identified by their SHA256 hash.
 
 This workflow is common in metabarcoding and metagenomics studies for creating a feature table (e.g., an ASV or OTU table) from raw sequencing data.
 
@@ -37,6 +37,10 @@ To run this script, you will need the following dependencies installed and avail
 ### External Tools
 
 * **vsearch**: A versatile open-source tool for sequence analysis. This script specifically uses its dereplication capabilities. It must be installed and accessible from the command line.
+
+### Python Version
+
+Python 3.9 or later is required.
 
 ### Python Libraries
 
@@ -64,6 +68,7 @@ The script is executed from the command line and accepts several arguments to co
 | `--min_seq_length`  | The minimum length a sequence must have to be included in the analysis.                                  |    No    |    `1`    |
 | `--min_unique_size` | The minimum number of times a unique sequence must appear to be considered a representative.             |    No    |    `1`    |
 | `--threads`         | The number of parallel processes to use for processing samples.                                          |    No    |    `1`    |
+| `--strip_suffix`    | A suffix to remove from sample IDs after extension removal (e.g. `_trimmed`), so IDs match metadata without post-processing. |    No    |    `''`   |
 
 ### Example Command
 
@@ -80,21 +85,21 @@ python3 your_script_name.py \
 
 ### Input Files
 
-The script expects a directory containing one or more FASTQ files compressed with `gzip` (i.e., ending in `.fastq.gz`). Each file is treated as a separate sample. The sample name is derived from the filename by removing the `.fastq.gz` extension. For example, `sample1.fastq.gz` will correspond to the sample ID `sample1`.
+The script expects a directory containing one or more FASTQ files compressed with `gzip` (i.e., ending in `.fastq.gz`). Each file is treated as a separate sample. The sample name is derived from the filename by removing the `.fastq.gz` extension using a regex, which correctly handles dots within the sample name itself (e.g. `sample.1_trimmed.fastq.gz` → `sample.1_trimmed`). Use `--strip_suffix` to further remove a trailing suffix from the result (e.g. `_trimmed`).
 
 ### Output Files
 
-1.  **Output FASTA (`--output_fasta`)**: A standard FASTA file containing all unique sequences found across all input samples. The header for each sequence is its SHA1 hash, which ensures a unique and consistent identifier.
+1.  **Output FASTA (`--output_fasta`)**: A standard FASTA file containing all unique sequences found across all input samples. The header for each sequence is its SHA256 hash, which ensures a unique and consistent identifier.
 
     *Example FASTA entry:*
 
     ```
-    >0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b
+    >0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0a1b2c3d4e5f6a7b8c9d0e1f
     GATTACAGATTACAGATTACAGATTACAGATTACAGATTACA...
     ```
 
 2.  **Output Table (`--output_table`)**: A tab-separated file representing the feature table.
-    * The first column, `sequence_id`, contains the SHA1 hash corresponding to the sequences in the output FASTA file.
+    * The first column, `sequence_id`, contains the SHA256 hash corresponding to the sequences in the output FASTA file.
     * Subsequent columns correspond to each sample ID.
     * The values in the table are the counts (abundances) of each sequence in each sample.
 
@@ -119,7 +124,7 @@ The script executes the following steps:
 4.  **Result Aggregation**: After all samples are processed, the main process aggregates the results:
     a.  **Parse `.uc` Files**: For each sample, the `.uc` file is parsed to count how many original reads belong to each unique sequence.
     b.  **Build Global Data Structures**:
-        * A dictionary `sequence_data` is created to store the actual sequence string for each unique sequence, keyed by its SHA1 hash.
+        * A dictionary `sequence_data` is created to store the actual sequence string for each unique sequence, keyed by its SHA256 hash.
         * A nested dictionary `abundance_data` is built to store the abundance of each sequence (`seq_id`) in each sample (`sample_id`).
 5.  **Generate Outputs**:
     a.  **Write FASTA File**: The `sequence_data` dictionary is used to write the final dereplicated FASTA file.
@@ -129,8 +134,9 @@ The script executes the following steps:
 ## 6. Function Descriptions
 
 * **`parse_args()`**: Defines and parses command-line arguments using `argparse`.
-* **`convert_fastq_to_fasta(fastq_file, output_dir)`**: Reads a gzipped FASTQ file, converts records to FASTA format, and prepends the sample ID to headers.
-* **`process_sample(fastq_file, temp_dir, args)`**: The main worker function for a single sample. It calls `convert_fastq_to_fasta` and then runs `vsearch`. It returns the sample ID and the paths to the dereplicated FASTA and `.uc` files.
-* **`parse_uc_file(uc_file, sample_id)`**: Parses the `vsearch` `.uc` output file to count the number of reads clustered into each unique sequence. It handles both hit (`H`) and seed (`S`) lines.
-* **`generate_sha1(sequence)`**: Computes the SHA1 hash of a given sequence string to create a unique identifier.
+* **`extract_sample_id(fastq_file, strip_suffix)`**: Derives a sample ID from a filename using a regex to strip the `.fastq.gz` or `.fastq` extension, preserving any dots within the name itself. Optionally removes a trailing suffix via `--strip_suffix`.
+* **`convert_fastq_to_fasta(fastq_file, output_dir, strip_suffix)`**: Reads a gzipped FASTQ file, converts records to FASTA format, and prepends the sample ID to headers.
+* **`process_sample(fastq_file, temp_dir, args)`**: The main worker function for a single sample. It calls `convert_fastq_to_fasta` and then runs `vsearch`. vsearch output is suppressed during normal operation; stderr is printed only if vsearch returns a non-zero exit code. Returns the sample ID and paths to the dereplicated FASTA and `.uc` files.
+* **`parse_uc_file(uc_file)`**: Parses the `vsearch` `.uc` output file to count the number of reads clustered into each unique sequence. It handles both hit (`H`) and seed (`S`) lines.
+* **`generate_sha256(sequence)`**: Computes the SHA256 hash of a given sequence string to create a unique identifier.
 * **`main()`**: The main function that orchestrates the entire workflow, from setting up parallel processing to aggregating results and writing the final output files.

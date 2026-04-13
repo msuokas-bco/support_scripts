@@ -6,7 +6,7 @@ The script is a bioinformatics tool designed to resolve taxonomic classification
 
 Its main purpose is to address the common challenge where a single sequence (or read) may align well to multiple different reference sequences (e.g., from closely related species). The script resolves these ambiguities using a Lowest Common Ancestor (LCA) algorithm.
 
-Finally, it generates a new, clean abundance table where counts are aggregated by their final taxonomic assignment. To ensure stable and concise identifiers, each unique taxonomy string is given a permanent, 10-character MD5 hash ID.
+Finally, it generates a new, clean abundance table where counts are aggregated by their final taxonomic assignment. To ensure stable and concise identifiers, each unique taxonomy string is given a permanent, 10-character SHA256 hash ID.
 
 ### **2. Dependencies**
 
@@ -31,13 +31,13 @@ The script follows a logical pipeline from raw alignments to a final, taxonomica
     * **Taxonomy File**: It loads the reference taxonomy into a dictionary, mapping each reference sequence ID to its full taxonomic string.
     * **Abundance File**: It loads the per-sample counts for each unique sequence ID.
 
-3.  **BAM File Processing**: The script iterates through the BAM file to build a dictionary where each `query_name` maps to a list of its alignment `(reference_name, alignment_score)`.
+3.  **BAM File Processing**: The script iterates through the BAM file to build a dictionary where each `query_name` maps to a list of its alignment `(reference_name, alignment_score)`. Supplementary alignments (flag `0x800`), which represent chimeric or split reads, are discarded before this step to prevent false multi-mapping signals from corrupting LCA assignment. Secondary alignments (`0x100`) are retained as legitimate multi-mappers.
 
 4.  **Taxonomy Assignment**: For each sequence, it filters alignments based on the `--score-threshold` relative to the best hit.
     * **One valid hit**: The sequence is directly assigned the taxonomy of that single reference.
-    * **Multiple valid hits**: The script triggers the **Lowest Common Ancestor (LCA)** algorithm, which finds the deepest taxonomic rank shared by a consensus (`--lca-threshold`) of the hits.
+    * **Multiple valid hits**: The script triggers the **Lowest Common Ancestor (LCA)** algorithm, which finds the deepest taxonomic rank shared by a consensus (`--lca-threshold`) of the hits. The threshold denominator is the total number of references (including those with no annotation at a given rank), so references lacking an annotation count against the threshold and prevent over-assignment at deeper ranks.
 
-5.  **Hash ID Generation**: To create a stable primary key, the script generates a 10-character MD5 hash (e.g., `a1b2c3d4e5`) for each unique taxonomic string produced.
+5.  **Hash ID Generation**: To create a stable primary key, the script generates a 10-character SHA256 hash (e.g., `a1b2c3d4e5`) for each unique taxonomic string produced.
 
 6.  **Abundance Aggregation**: The script creates a new abundance table by summing the counts of all original sequences that resolve to the same final hash ID.
 
@@ -54,7 +54,7 @@ Assuming no `--prefix` is used, the script generates the following files:
 1.  **`abundance_table.tsv` - The Final Abundance Table**
     * **Purpose**: This is the main quantitative output. It provides the abundance of each final taxonomy across all samples.
     * **Format**: A tab-separated value (TSV) file.
-    * **Columns**: `TaxID` (the 10-character hash), `Sample1`, `Sample2`, ...
+    * **Columns**: `TaxID` (the 10-character SHA256 hash), `Sample1`, `Sample2`, ...
     * **Rows**: Each row represents a unique taxonomic entity, and the values are the **sum of counts** from all original sequences assigned to that `TaxID`.
 
 2.  **`taxonomy_table.tsv` - The Taxonomy Key**
