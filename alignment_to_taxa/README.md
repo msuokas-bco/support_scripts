@@ -10,15 +10,14 @@ Finally, it generates a new, clean abundance table where counts are aggregated b
 
 ### **2. Dependencies**
 
-The script requires the following Python libraries:
+The script requires the following Python library:
 
 * **pysam**: For reading and parsing the input BAM file.
-* **pandas**: Used for handling and structuring data.
 
-These can be installed using pip:
+It can be installed using pip:
 
 ```{bash}
-pip install pysam pandas
+pip install pysam
 ```
 
 ### **3. Core Functionality & Workflow**

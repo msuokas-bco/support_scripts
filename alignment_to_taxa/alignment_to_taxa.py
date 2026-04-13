@@ -7,6 +7,8 @@
 #            LCA denominator changed to total reference count so references with
 #              no annotation at a rank count against the threshold, preventing
 #              over-assignment at deeper ranks
+#            MD5 replaced with SHA256 for taxonomy hash IDs
+#            Batch progress uses ceiling division for consistent update count
 """
 Taxonomy Assignment Tool
 
