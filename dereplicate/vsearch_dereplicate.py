@@ -4,6 +4,10 @@
 #   v1.1.0 - Robust sample ID extraction using regex (supports dots in filenames)
 #            Added --strip_suffix option to remove trailing suffixes (e.g. _trimmed)
 #              from sample IDs, so they match metadata without post-processing
+#            SHA1 replaced with SHA256 for sequence hashing
+#            vsearch stderr suppressed during normal runs, shown only on failure
+#            Output parent directories created automatically if they do not exist
+#            Python 3.9+ version guard added at startup
 
 import os
 import re

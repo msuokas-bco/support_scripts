@@ -73,7 +73,7 @@ The script is executed from the command line and accepts several arguments to co
 ### Example Command
 
 ```{bash, eval=FALSE}
-python3 your_script_name.py \
+python3 vsearch_dereplicate.py \
     --input_dir ./my_fastq_files/ \
     --output_fasta unique_sequences.fasta \
     --output_table abundance_table.tsv \
