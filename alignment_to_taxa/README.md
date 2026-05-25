@@ -30,7 +30,7 @@ The script follows a logical pipeline from raw alignments to a final, taxonomica
     * **Taxonomy File**: It loads the reference taxonomy into a dictionary, mapping each reference sequence ID to its full taxonomic string.
     * **Abundance File**: It loads the per-sample counts for each unique sequence ID.
 
-3.  **BAM File Processing**: The script iterates through the BAM file to build a dictionary where each `query_name` maps to a list of its alignment `(reference_name, alignment_score)`. Supplementary alignments (flag `0x800`), which represent chimeric or split reads, are discarded before this step to prevent false multi-mapping signals from corrupting LCA assignment. Secondary alignments (`0x100`) are retained as legitimate multi-mappers.
+3.  **BAM File Processing**: The script streams through the BAM file using `itertools.groupby` over a name-sorted BAM, processing all alignments for one query at a time and discarding them immediately after assignment. This means peak RAM is bounded to the taxonomy dictionary, the abundance table, and one query's hits — not the entire alignment set. The BAM **must be name-sorted** (`samtools sort -n`) for this to work correctly. The script validates the BAM header at startup: if the `SO:` field is set to `coordinate`, it exits immediately with an error message and the `samtools sort -n` command needed to fix the file. If `SO:` is absent (common with minimap2) or set to `queryname`/`unsorted`, processing continues normally. Supplementary alignments (flag `0x800`), which represent chimeric or split reads, are discarded to prevent false multi-mapping signals from corrupting LCA assignment. Secondary alignments (`0x100`) are retained as legitimate multi-mappers.
 
 4.  **Taxonomy Assignment**: For each sequence, it filters alignments based on the `--score-threshold` relative to the best hit.
     * **One valid hit**: The sequence is directly assigned the taxonomy of that single reference.
@@ -74,6 +74,12 @@ Assuming no `--prefix` is used, the script generates the following files:
 ### **5. Usage Example**
 
 Below is an example of how to run the script from the command line.
+
+The input BAM must be name-sorted. If it is not already, sort it first:
+
+```{bash}
+samtools sort -n -o alignments.name_sorted.bam alignments.bam
+```
 
 ```{bash}
 ./alignment_to_taxa.py \

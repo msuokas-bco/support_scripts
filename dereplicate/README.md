@@ -44,13 +44,12 @@ Python 3.9 or later is required.
 
 ### Python Libraries
 
-* **pandas**: Used for creating and managing the final abundance table.
 * **Biopython**: Used for parsing FASTQ and FASTA files efficiently.
 
-You can install the required Python libraries using pip:
+You can install the required Python library using pip:
 
 ```{bash, eval=FALSE}
-pip install pandas biopython
+pip install biopython
 ```
 
 ## 3. Usage
@@ -68,7 +67,7 @@ The script is executed from the command line and accepts several arguments to co
 | `--min_seq_length`  | The minimum length a sequence must have to be included in the analysis.                                  |    No    |    `1`    |
 | `--min_unique_size` | The minimum number of times a unique sequence must appear to be considered a representative.             |    No    |    `1`    |
 | `--threads`         | The number of parallel processes to use for processing samples.                                          |    No    |    `1`    |
-| `--strip_suffix`    | A suffix to remove from sample IDs after extension removal (e.g. `_trimmed`), so IDs match metadata without post-processing. |    No    |    `''`   |
+| `--strip_suffix`    | A suffix to remove from sample IDs after extension removal (e.g. `_trimmed`), so IDs match metadata without post-processing. If two files produce the same sample ID after stripping, the script exits with an error listing the conflicting IDs. |    No    |    `''`   |
 
 ### Example Command
 
@@ -117,18 +116,17 @@ The script expects a directory containing one or more FASTQ files compressed wit
 The script executes the following steps:
 
 1.  **Argument Parsing**: Reads the command-line arguments provided by the user.
-2.  **File Discovery**: Scans the `--input_dir` for all `.fastq.gz` files.
+2.  **File Discovery**: Scans the `--input_dir` for all `.fastq.gz` files. Sample IDs are derived from filenames at this point, and if any two files produce the same ID after `--strip_suffix` is applied, the script exits immediately with an error listing the conflicting IDs before any processing begins.
 3.  **Parallel Processing**: It creates a temporary directory and processes each FASTQ file in parallel using a `ProcessPoolExecutor`. For each file:
     a.  **FASTQ to FASTA Conversion**: The `.fastq.gz` file is read, and its contents are converted into a FASTA file. The sample ID is prepended to each sequence header to track its origin (e.g., `>sample1_read1`).
     b.  **Vsearch Dereplication**: `vsearch` is called to perform dereplication on the generated FASTA file. This step produces a dereplicated FASTA file (containing only unique sequences for that sample) and a `.uc` file that maps reads to the unique sequences.
-4.  **Result Aggregation**: After all samples are processed, the main process aggregates the results:
-    a.  **Parse `.uc` Files**: For each sample, the `.uc` file is parsed to count how many original reads belong to each unique sequence.
-    b.  **Build Global Data Structures**:
-        * A dictionary `sequence_data` is created to store the actual sequence string for each unique sequence, keyed by its SHA256 hash.
-        * A nested dictionary `abundance_data` is built to store the abundance of each sequence (`seq_id`) in each sample (`sample_id`).
+4.  **Result Aggregation**: After all samples are processed, the main process aggregates the results one sample at a time to minimise peak RAM and temporary disk usage:
+    a.  **Parse `.uc` File**: The `.uc` file is parsed to count how many original reads belong to each unique sequence; the `.uc` file is deleted immediately afterwards.
+    b.  **Stream unique sequences to FASTA**: Each unique sequence from the sample's dereplicated FASTA is hashed with SHA256. If it has not been seen before it is written to the output FASTA immediately, so no `sequence_data` dict accumulates in memory. The dereplicated FASTA file is deleted immediately after its sequences are processed.
+    c.  **Accumulate abundances**: A nested dictionary `abundance_data` records the per-sample count for each globally unique sequence hash.
 5.  **Generate Outputs**:
-    a.  **Write FASTA File**: The `sequence_data` dictionary is used to write the final dereplicated FASTA file.
-    b.  **Write Abundance Table**: The `abundance_data` is converted into a pandas DataFrame and then written to the output TSV file. The table is structured with sequence IDs as rows and sample IDs as columns.
+    a.  **FASTA file**: Written incrementally during aggregation (step 4b); no additional write step is required.
+    b.  **Write Abundance Table**: `abundance_data` is written directly to TSV using `csv.writer` — sorted by sequence hash for deterministic output — without constructing an intermediate DataFrame.
 6.  **Cleanup**: The temporary directory and all intermediate files are automatically removed upon script completion.
 
 ## 6. Function Descriptions

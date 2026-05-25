@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
-# vsearch_dereplicate.py v1.1.0
+# vsearch_dereplicate.py v1.2.1
 # Changelog:
+#   v1.2.1 - Duplicate sample ID detection: exits with a clear error if two input
+#              files produce the same sample ID after --strip_suffix is applied
+#   v1.2.0 - Reduced peak RAM by streaming unique sequences to FASTA as encountered
+#              instead of holding all sequence strings in memory
+#            Removed pandas dependency; TSV written directly with csv.writer,
+#              eliminating intermediate list-of-dicts and DataFrame allocation
+#            Reduced peak TMP usage by deleting per-sample raw FASTA immediately
+#              after vsearch consumes it, and deleting derep FASTA and UC file
+#              immediately after their data is aggregated
+#            TSV row order is now deterministic (sorted by SHA256 hash)
 #   v1.1.0 - Robust sample ID extraction using regex (supports dots in filenames)
 #            Added --strip_suffix option to remove trailing suffixes (e.g. _trimmed)
 #              from sample IDs, so they match metadata without post-processing
@@ -12,11 +22,11 @@
 import os
 import re
 import sys
+import csv
 import subprocess
 import tempfile
 import argparse
 import hashlib
-import pandas as pd
 from collections import defaultdict
 import gzip
 from Bio import SeqIO
@@ -86,7 +96,10 @@ def process_sample(fastq_file, temp_dir, args):
     except subprocess.CalledProcessError as e:
         print(e.stderr.decode() if e.stderr else '', file=sys.stderr)
         raise
-    
+    finally:
+        if os.path.exists(fasta_file):
+            os.remove(fasta_file)
+
     return sample_id, derep_fasta, uc_file
 
 def parse_uc_file(uc_file):
@@ -133,43 +146,39 @@ def main():
                 sample_results.append(future.result())
         
         abundance_data = defaultdict(lambda: defaultdict(int))
-        sequence_data = {}
-        
-        for sample_id, derep_fasta, uc_file in sample_results:
-            seq_counts = parse_uc_file(uc_file)
-            
-            with open(derep_fasta, 'r') as f:
-                for record in SeqIO.parse(f, 'fasta'):
-                    seq_str = str(record.seq)
-                    seq_id = generate_sha256(seq_str)
-                    
-                    if seq_id not in sequence_data:
-                        sequence_data[seq_id] = seq_str
-                    
-                    original_id = record.id
-                    
-                    # Always add count (zero if not present)
-                    abundance_data[seq_id][sample_id] += seq_counts.get(original_id, 0)
-        
-        # Write dereplicated sequences to FASTA
-        with open(args.output_fasta, 'w') as f:
-            for seq_id, seq in sequence_data.items():
-                f.write(f">{seq_id}\n{seq}\n")
-        
+        seen_seqs = set()
+
         sample_ids = sorted([extract_sample_id(f, args.strip_suffix) for f in fastq_files])
-        table_data = []
-        
-        for seq_id in sequence_data:
-            row = {'sequence_id': seq_id}
-            for sample in sample_ids:
-                row[sample] = abundance_data[seq_id].get(sample, 0)
-            table_data.append(row)
-        
-        df = pd.DataFrame(table_data)
-        df.to_csv(args.output_table, sep='\t', index=False)
-        
+        dupes = [s for s in set(sample_ids) if sample_ids.count(s) > 1]
+        if dupes:
+            sys.exit(f"Error: duplicate sample IDs after suffix stripping: {dupes}")
+
+        with open(args.output_fasta, 'w') as out_fa:
+            for sample_id, derep_fasta, uc_file in sample_results:
+                seq_counts = parse_uc_file(uc_file)
+                os.remove(uc_file)
+
+                with open(derep_fasta, 'r') as f:
+                    for record in SeqIO.parse(f, 'fasta'):
+                        seq_str = str(record.seq)
+                        seq_id = generate_sha256(seq_str)
+
+                        if seq_id not in seen_seqs:
+                            seen_seqs.add(seq_id)
+                            out_fa.write(f">{seq_id}\n{seq_str}\n")
+
+                        abundance_data[seq_id][sample_id] += seq_counts.get(record.id, 0)
+
+                os.remove(derep_fasta)
+
+        with open(args.output_table, 'w', newline='') as f:
+            writer = csv.writer(f, delimiter='\t')
+            writer.writerow(['sequence_id'] + sample_ids)
+            for seq_id in sorted(seen_seqs):
+                writer.writerow([seq_id] + [abundance_data[seq_id].get(s, 0) for s in sample_ids])
+
         print(f"Dereplication complete!")
-        print(f"Found {len(sequence_data)} unique sequences across {len(sample_ids)} samples")
+        print(f"Found {len(seen_seqs)} unique sequences across {len(sample_ids)} samples")
         print(f"Results written to:")
         print(f"  - Sequences: {args.output_fasta}")
         print(f"  - Abundance table: {args.output_table}")
